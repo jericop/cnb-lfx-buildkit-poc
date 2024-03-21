@@ -1,0 +1,27 @@
+# Pin the lifecycle version so we can be sure of the behavior if we run this script in the future
+FROM chainguard/crane:latest as crane
+FROM buildpacksio/lifecycle:0.16.3 as lifecycle
+FROM ghcr.io/jericop/builder-jammy:latest
+USER root
+
+COPY --from=crane /usr/bin/crane /usr/local/bin/crane
+COPY --from=lifecycle /cnb/lifecycle /cnb/lifecycle
+COPY ./cnb-build-files/cnb/buildpacks /cnb/buildpacks
+COPY ./cnb-build-files/layers /layers
+
+RUN mkdir -p /cache
+RUN chown -R cnb:cnb /workspace /cache
+RUN chown -R cnb:cnb /layers /platform
+RUN find /layers
+
+USER cnb
+
+ENV CNB_PLATFORM_API=0.9
+
+COPY ./ /workspace
+
+WORKDIR /workspace
+
+# Add RUN command(s) below here to run the lifecycle commands and build and export the app to a registry
+# It also fixes the architecture because it always gets set to amd64 when running in buildkit.
+
