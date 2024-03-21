@@ -1,0 +1,78 @@
+# Pin the lifecycle version so we can be sure of the behavior if we run this script in the future
+FROM chainguard/crane:latest as crane
+FROM buildpacksio/lifecycle:0.16.3 as lifecycle
+FROM ghcr.io/jericop/builder-jammy:latest
+USER root
+
+COPY --from=crane /usr/bin/crane /usr/local/bin/crane
+COPY --from=lifecycle /cnb/lifecycle /cnb/lifecycle
+COPY ./cnb-build-files/cnb/buildpacks /cnb/buildpacks
+COPY ./cnb-build-files/layers /layers
+
+RUN mkdir -p /cache
+RUN chown -R cnb:cnb /workspace /cache
+RUN chown -R cnb:cnb /layers /platform
+RUN find /layers
+
+USER cnb
+
+ENV CNB_PLATFORM_API=0.9
+
+COPY ./ /workspace
+
+WORKDIR /workspace
+
+# Add RUN command(s) below here to run the lifecycle commands and build and export the app to a registry
+# It also fixes the architecture because it always gets set to amd64 when running in buildkit.
+
+RUN <<RUN_EOF
+
+export image_arch=amd64
+if [ $(arch) = "aarch64" ]; then
+  export image_arch=arm64
+fi
+
+export image_uri="localhost:55000/inline-app:$image_arch"
+
+echo "#!/bin/bash" > /workspace/lifecycle-build.sh
+cat <<IN_BUILDKIT_LIFECYCLE_SCRIPT_EOF >> /workspace/lifecycle-build.sh
+
+set -euo pipefail
+set -x
+
+/cnb/lifecycle/analyzer -log-level debug -stack /layers/stack.toml -run-image ghcr.io/jericop/run-jammy:latest localhost:55000/inline-app:$image_arch
+/cnb/lifecycle/detector -app /workspace -log-level debug
+/cnb/lifecycle/restorer -cache-dir /cache -log-level debug
+/cnb/lifecycle/builder -app /workspace -log-level debug
+/cnb/lifecycle/exporter -log-level debug -app /workspace -cache-dir /cache -stack /layers/stack.toml localhost:55000/inline-app:$image_arch
+
+crane pull $image_uri image.tar
+
+mkdir -p contents
+tar -xvf image.tar -C contents
+cd contents
+ls
+cat manifest.json | jq -r '.[0].Config'
+current_config=\$(cat manifest.json | jq -r '.[0].Config')
+echo \$current_config
+cat \$current_config | jq -c ".architecture = \"\${image_arch}\" | .os = \"linux\"" | tr -d '\n' > newconfig.json
+new_config="sha256:$(sha256sum newconfig.json | cut -d' ' -f1)"
+rm -f "\${current_config}"
+mv newconfig.json "\${new_config}"
+cat manifest.json| jq -c ".[0].Config = \"\${new_config}\"" | tr -d '\n' > newmanifest.json
+mv -f newmanifest.json manifest.json
+tar -cvf ../fixed-arch-image.tar *
+cd ..
+
+crane push fixed-arch-image.tar $image_uri
+
+rm -rf image.tar fixed-arch-image.tar contents
+
+IN_BUILDKIT_LIFECYCLE_SCRIPT_EOF
+
+# Run the lifecycle script and ensure correct architecture is set
+chmod +x /workspace/lifecycle-build.sh
+/workspace/lifecycle-build.sh
+
+RUN_EOF
+

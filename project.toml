@@ -1,0 +1,38 @@
+[project]
+name = "inline-app"
+
+# stack images need to be multi-arch for this to work
+[build]
+builder = "ghcr.io/jericop/builder-jammy:latest"
+
+[[build.buildpacks]]
+id = "inline/shell-buildpack"
+
+[build.buildpacks.script]
+api = "0.8"
+inline = """
+set -x
+
+# sleep 300
+
+build_files=/workspace/build-files
+
+mkdir -p $build_files/cnb
+mkdir -p $build_files/layers
+
+ls /cnb/*.toml
+cp -r /cnb/*.toml $build_files/cnb/
+cp -r /cnb/buildpacks $build_files/cnb/
+
+cp /cnb/order.toml $build_files/layers/ 
+cp /layers/*.toml $build_files/layers/
+
+find $build_files
+
+cat <<EOF > ${1}/launch.toml
+[[processes]]
+type = 'web'
+command = 'bin/bash'
+default = true
+EOF
+"""
